@@ -95,18 +95,28 @@ The repository includes deploy configurations for GitHub Pages and Vercel
 (Flutter web frontend), plus Render (FastAPI backend).
 
 1. Deploy the Render service from `render.yaml`. It starts with simulated
-     BTCUSDT and AAPL markets. Wait for `/api/markets` to respond.
+   BTCUSDT and AAPL markets. Wait for `/api/markets` to respond.
 2. Set `ORDERFLOW_WS_URL` to `wss://<your-render-service>.onrender.com/ws/orderflow`
-     as a GitHub Actions repository variable and as a Vercel environment variable.
+   as a GitHub Actions repository variable and as a Vercel environment variable.
 3. Enable GitHub Pages with **GitHub Actions** as its source. Each push to
-     `main` builds the Flutter web client and deploys it under the repository path.
+   `main` builds the Flutter web client and deploys it under the repository path.
 4. Import the repository into Vercel. Its `vercel.json` builds the same client
-     at the domain root; configure the same `ORDERFLOW_WS_URL` variable there.
+   at the domain root; configure the same `ORDERFLOW_WS_URL` variable there.
 
 The frontend build fails when `ORDERFLOW_WS_URL` is missing rather than silently
 shipping a browser client pointed at localhost. The Pages and Vercel frontends
 are public clients, so the Render API must allow their origins if CORS is later
 restricted.
+
+If the Render service was created manually instead of from the Blueprint, set
+its Root Directory to `.` and Start Command to:
+
+```bash
+python -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port $PORT
+```
+
+The command `uvicorn main:app` cannot work from the repository root because the
+ASGI app lives in `backend/app/main.py`.
 
 ## Running Locally
 
