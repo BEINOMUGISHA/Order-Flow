@@ -1,29 +1,20 @@
 import asyncio
 import json
 import logging
-import random
-import time
-from typing import List, Set, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from typing import Any, Dict, List, Optional
 
-from app.schemas.models import Tick, BookUpdate, OrderBookSnapshot, FootprintBar, AlertPayload, HealthStatus
-from app.state.order_book import OrderBook
-from app.state.tape_buffer import RollingTapeBuffer
-from app.analytics.delta_engine import DeltaEngine
-from app.analytics.absorption_engine import AbsorptionEngine
-from app.analytics.iceberg_engine import IcebergEngine
-from app.analytics.imbalance_engine import ImbalanceEngine
-from app.analytics.tape_speed_engine import TapeSpeedEngine
-from app.alerts.alert_manager import AlertManager
-from app.ingestion.binance_client import BinanceClient
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.ingestion.adapters import MarketDataAdapter, create_market_data_adapter
+from app.ingestion.market_config import MarketConfig, load_market_configs
+from app.market_runtime import MarketRuntime
+from app.schemas.models import AlertPayload, FootprintBar, HealthStatus
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("OrderFlowApp")
 
-app = FastAPI(title="Real-Time Order Flow Engine API", version="1.0.0")
-
+app = FastAPI(title="Real-Time Order Flow Engine API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -32,183 +23,135 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global State & Engines
-SYMBOL = "BTCUSDT"
-order_book = OrderBook(SYMBOL)
-tape_buffer = RollingTapeBuffer()
-delta_engine = DeltaEngine(symbol=SYMBOL, tick_size=0.1)
-absorption_engine = AbsorptionEngine(tick_size=0.1)
-iceberg_engine = IcebergEngine()
-imbalance_engine = ImbalanceEngine()
-tape_speed_engine = TapeSpeedEngine()
-alert_manager = AlertManager()
-binance_client = BinanceClient(symbol=SYMBOL, is_futures=True)
-
-active_connections: Set[WebSocket] = set()
+markets: List[MarketConfig] = load_market_configs()
+market_runtimes = {market.symbol: MarketRuntime(market) for market in markets}
+market_adapters: Dict[str, MarketDataAdapter] = {
+    market.symbol: create_market_data_adapter(market.provider) for market in markets
+}
+default_symbol = markets[0].symbol
+active_connections: Dict[WebSocket, str] = {}
+feed_tasks: List[asyncio.Task] = []
 
 
 class ConnectionManager:
     @staticmethod
-    async def connect(websocket: WebSocket):
+    async def connect(websocket: WebSocket, symbol: str) -> None:
         await websocket.accept()
-        active_connections.add(websocket)
-        logger.info(f"WebSocket client connected. Total clients: {len(active_connections)}")
+        active_connections[websocket] = symbol
+        logger.info("WebSocket connected for %s (%s clients)", symbol, len(active_connections))
 
     @staticmethod
-    def disconnect(websocket: WebSocket):
-        active_connections.remove(websocket)
-        logger.info(f"WebSocket client disconnected. Total clients: {len(active_connections)}")
+    def disconnect(websocket: WebSocket) -> None:
+        active_connections.pop(websocket, None)
 
     @staticmethod
-    async def broadcast(message: dict):
-        if not active_connections:
-            return
+    async def broadcast(symbol: str, message: Dict[str, Any]) -> None:
         payload = json.dumps(message)
-        disconnected = set()
-        for conn in active_connections:
+        disconnected = []
+        for connection, subscribed_symbol in active_connections.items():
+            if subscribed_symbol != symbol:
+                continue
             try:
-                await conn.send_text(payload)
+                await connection.send_text(payload)
             except Exception:
-                disconnected.add(conn)
-        for conn in disconnected:
-            active_connections.remove(conn)
+                disconnected.append(connection)
+        for connection in disconnected:
+            active_connections.pop(connection, None)
+
+
+def get_runtime(symbol: Optional[str]) -> MarketRuntime:
+    selected_symbol = (symbol or default_symbol).strip().upper()
+    runtime = market_runtimes.get(selected_symbol)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail=f"Unknown market: {selected_symbol}")
+    return runtime
+
+
+def market_descriptions() -> List[Dict[str, Any]]:
+    return [
+        {
+            "symbol": market.symbol,
+            "provider": market.provider,
+            "asset_class": market.asset_class,
+            "tick_size": market.tick_size,
+        }
+        for market in markets
+    ]
+
+
+@app.get("/api/markets")
+def get_markets() -> List[Dict[str, Any]]:
+    return market_descriptions()
 
 
 @app.get("/api/health")
-def get_health() -> HealthStatus:
-    return order_book.status
+def get_health(symbol: Optional[str] = None) -> HealthStatus:
+    return get_runtime(symbol).order_book.status
 
 
 @app.get("/api/alerts")
-def get_alerts(limit: int = 50) -> List[AlertPayload]:
-    return alert_manager.get_audit_log(limit=limit)
+def get_alerts(
+    symbol: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=500),
+) -> List[AlertPayload]:
+    return get_runtime(symbol).alerts(limit)
 
 
 @app.get("/api/bars")
-def get_completed_bars() -> List[FootprintBar]:
-    return delta_engine.completed_bars
+def get_completed_bars(symbol: Optional[str] = None) -> List[FootprintBar]:
+    return get_runtime(symbol).completed_bars()
 
 
 @app.websocket("/ws/orderflow")
-async def orderflow_websocket(websocket: WebSocket):
-    await ConnectionManager.connect(websocket)
-    try:
-        # Send initial state snapshot
-        initial_payload = {
-            "type": "INITIAL_STATE",
-            "health": order_book.status.model_dump(),
-            "completed_bars": [b.model_dump() for b in delta_engine.completed_bars[-20:]],
-            "active_bar": delta_engine.current_bar.model_dump() if delta_engine.current_bar else None,
-            "session_cvd": delta_engine.session_cvd,
-            "alerts": [a.model_dump() for a in alert_manager.get_audit_log(20)],
-        }
-        await websocket.send_text(json.dumps(initial_payload))
+async def orderflow_websocket(websocket: WebSocket, symbol: Optional[str] = None) -> None:
+    selected_symbol = (symbol or default_symbol).strip().upper()
+    runtime = market_runtimes.get(selected_symbol)
+    if runtime is None:
+        await websocket.close(code=1008, reason=f"Unknown market: {selected_symbol}")
+        return
 
+    await ConnectionManager.connect(websocket, selected_symbol)
+    try:
+        await websocket.send_text(json.dumps(runtime.initial_state(market_descriptions())))
         while True:
-            # Keep connection alive
             await websocket.receive_text()
     except WebSocketDisconnect:
         ConnectionManager.disconnect(websocket)
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+    except Exception:
+        logger.exception("WebSocket error for %s", selected_symbol)
         ConnectionManager.disconnect(websocket)
 
 
-async def simulated_tick_generator():
-    """
-    High-frequency realistic order flow generator for live testing/demoing
-    when live exchange feeds are offline or for benchmark testing.
-    """
-    current_price = 65000.0
-    tick_id = 1000
-    base_time = int(time.time() * 1000)
-
-    # Initialize snapshot in order book
-    order_book.apply_snapshot(
-        OrderBookSnapshot(
-            symbol=SYMBOL,
-            last_update_id=100,
-            bids=[(current_price - i * 0.1, round(random.uniform(0.5, 5.0), 2)) for i in range(10)],
-            asks=[(current_price + i * 0.1, round(random.uniform(0.5, 5.0), 2)) for i in range(10)],
-        )
-    )
-
+async def run_market_feed(runtime: MarketRuntime, adapter: MarketDataAdapter) -> None:
+    symbol = runtime.market.symbol
     while True:
-        await asyncio.sleep(random.uniform(0.05, 0.2))  # 5 to 20 trades per sec
-
-        # Price movement random walk
-        step = random.choice([-0.1, 0.0, 0.0, 0.1])
-        current_price = round(current_price + step, 1)
-
-        side = random.choice(["BUY", "SELL"])
-        # Occasionally generate large outlier trade for absorption
-        if random.random() < 0.05:
-            qty = round(random.uniform(8.0, 15.0), 2)
-        else:
-            qty = round(random.uniform(0.01, 1.5), 2)
-
-        tick_id += 1
-        now_ms = int(time.time() * 1000)
-
-        tick = Tick(
-            symbol=SYMBOL,
-            price=current_price,
-            quantity=qty,
-            trade_id=str(tick_id),
-            aggressor_side=side,
-            exchange_time=now_ms,
-            local_receipt_time=time.time(),
-            classification_method="EXCHANGE_FLAG",
-        )
-
-        tape_buffer.add_tick(tick)
-        completed_bar, active_bar = delta_engine.process_tick(tick)
-
-        alerts = []
-
-        # Check absorption
-        abs_alert = absorption_engine.check_absorption(tick, tape_buffer, active_bar)
-        if abs_alert:
-            p = alert_manager.process_alert(abs_alert)
-            if p:
-                alerts.append(p)
-
-        # Check iceberg
-        ice_alert = iceberg_engine.check_iceberg(tick, order_book, active_bar)
-        if ice_alert:
-            p = alert_manager.process_alert(ice_alert)
-            if p:
-                alerts.append(p)
-
-        # Check tape speed
-        tsp_alert = tape_speed_engine.check_tape_speed(tick, tape_buffer)
-        if tsp_alert:
-            p = alert_manager.process_alert(tsp_alert)
-            if p:
-                alerts.append(p)
-
-        # Check imbalances on completed bar
-        if completed_bar:
-            imb_alerts = imbalance_engine.evaluate_bar_imbalances(completed_bar)
-            for imb in imb_alerts:
-                p = alert_manager.process_alert(imb)
-                if p:
-                    alerts.append(p)
-
-        # Broadcast state update
-        msg = {
-            "type": "TICK_UPDATE",
-            "tick": tick.model_dump(),
-            "active_bar": active_bar.model_dump(),
-            "completed_bar": completed_bar.model_dump() if completed_bar else None,
-            "session_cvd": active_bar.cvd,
-            "health": order_book.status.model_dump(),
-            "alerts": [a.model_dump() for a in alerts],
-        }
-        await ConnectionManager.broadcast(msg)
+        try:
+            async for event in adapter.stream(runtime.market):
+                await ConnectionManager.broadcast(symbol, runtime.process_event(event))
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.exception("Market feed failed for %s", symbol)
+            runtime.order_book.status.state = "DISCONNECTED"
+            runtime.order_book.status.message = f"Feed error: {error}"
+            await ConnectionManager.broadcast(
+                symbol,
+                {"type": "HEALTH_UPDATE", "health": runtime.order_book.status.model_dump()},
+            )
+            await asyncio.sleep(2)
 
 
 @app.on_event("startup")
-async def startup_event():
-    logger.info("Starting Real-Time Order Flow Engine background task...")
-    asyncio.create_task(simulated_tick_generator())
+async def startup_event() -> None:
+    logger.info("Starting market feeds for %s", ", ".join(market_runtimes))
+    for symbol, runtime in market_runtimes.items():
+        feed_tasks.append(asyncio.create_task(run_market_feed(runtime, market_adapters[symbol])))
+
+
+@app.on_event("shutdown")
+async def shutdown_event() -> None:
+    for task in feed_tasks:
+        task.cancel()
+    if feed_tasks:
+        await asyncio.gather(*feed_tasks, return_exceptions=True)
+    feed_tasks.clear()

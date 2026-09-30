@@ -1,3 +1,26 @@
+class MarketInfo {
+  final String symbol;
+  final String provider;
+  final String assetClass;
+  final double tickSize;
+
+  MarketInfo({
+    required this.symbol,
+    required this.provider,
+    required this.assetClass,
+    required this.tickSize,
+  });
+
+  factory MarketInfo.fromJson(Map<String, dynamic> json) {
+    return MarketInfo(
+      symbol: json['symbol'] ?? '',
+      provider: json['provider'] ?? '',
+      assetClass: json['asset_class'] ?? 'other',
+      tickSize: (json['tick_size'] as num?)?.toDouble() ?? 0.0,
+    );
+  }
+}
+
 class FootprintLevel {
   final double price;
   final double bidVol;

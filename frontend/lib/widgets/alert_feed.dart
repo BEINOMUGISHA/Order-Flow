@@ -15,27 +15,35 @@ class AlertFeedWidget extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const Row(
                 children: [
-                  Icon(Icons.notifications_active, color: Colors.amberAccent, size: 18),
-                  SizedBox(width: 8),
-                  Text(
-                    'AUDITABLE LIVE SIGNAL & ALERT FEED',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
-                      letterSpacing: 1.1,
+                  const Icon(Icons.notifications_active,
+                      color: Colors.amberAccent, size: 18),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'AUDITABLE LIVE SIGNAL & ALERT FEED',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                        letterSpacing: 1.1,
+                      ),
                     ),
                   ),
                 ],
               ),
-              Text(
-                'Total Alerts: ${alerts.length}',
-                style: const TextStyle(color: Colors.white54, fontSize: 11),
+              Align(
+                alignment: Alignment.centerRight,
+                child: Text(
+                  'Total Alerts: ${alerts.length}',
+                  style: const TextStyle(color: Colors.white54, fontSize: 11),
+                ),
               ),
             ],
           ),
@@ -43,13 +51,16 @@ class AlertFeedWidget extends StatelessWidget {
           Expanded(
             child: alerts.isEmpty
                 ? const Center(
-                    child: Text('No Signal Alerts Triggered Yet', style: TextStyle(color: Colors.white30)),
+                    child: Text('No Signal Alerts Triggered Yet',
+                        style: TextStyle(color: Colors.white30)),
                   )
                 : ListView.separated(
                     itemCount: alerts.length,
-                    separatorBuilder: (_, __) => const Divider(color: Color(0xFF1E293B), height: 1),
+                    separatorBuilder: (_, __) =>
+                        const Divider(color: Color(0xFF1E293B), height: 1),
                     itemBuilder: (context, index) {
-                      AlertPayload alert = alerts[alerts.length - 1 - index]; // reverse order
+                      AlertPayload alert =
+                          alerts[alerts.length - 1 - index]; // reverse order
                       return _buildAlertTile(alert);
                     },
                   ),
@@ -90,14 +101,16 @@ class AlertFeedWidget extends StatelessWidget {
         ),
         child: Text(
           '${(alert.confidenceScore * 100).toInt()}%',
-          style: TextStyle(color: tierColor, fontWeight: FontWeight.bold, fontSize: 11),
+          style: TextStyle(
+              color: tierColor, fontWeight: FontWeight.bold, fontSize: 11),
         ),
       ),
       title: Row(
         children: [
           Text(
             alert.alertType,
-            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+            style: const TextStyle(
+                color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
           ),
           const SizedBox(width: 8),
           Text(
@@ -119,29 +132,46 @@ class AlertFeedWidget extends StatelessWidget {
             children: [
               const Text(
                 'RAW AUDIT METRICS:',
-                style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 10),
+                style: TextStyle(
+                    color: Colors.white70,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 10),
               ),
               const SizedBox(height: 4),
               Text(
                 alert.rawMetrics.toString(),
-                style: const TextStyle(color: Colors.white54, fontSize: 10, fontFamily: 'monospace'),
+                style: const TextStyle(
+                    color: Colors.white54,
+                    fontSize: 10,
+                    fontFamily: 'monospace'),
               ),
               const SizedBox(height: 6),
               const Text(
                 'THRESHOLDS USED:',
-                style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 10),
+                style: TextStyle(
+                    color: Colors.white70,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 10),
               ),
               Text(
                 alert.thresholdUsed.toString(),
-                style: const TextStyle(color: Colors.white54, fontSize: 10, fontFamily: 'monospace'),
+                style: const TextStyle(
+                    color: Colors.white54,
+                    fontSize: 10,
+                    fontFamily: 'monospace'),
               ),
               if (alert.failureModes.isNotEmpty) ...[
                 const SizedBox(height: 6),
                 const Text(
                   'DISCLOSED FAILURE MODES:',
-                  style: TextStyle(color: Colors.amber, fontWeight: FontWeight.bold, fontSize: 10),
+                  style: TextStyle(
+                      color: Colors.amber,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 10),
                 ),
-                ...alert.failureModes.map((fm) => Text('• $fm', style: const TextStyle(color: Colors.amberAccent, fontSize: 10))),
+                ...alert.failureModes.map((fm) => Text('• $fm',
+                    style: const TextStyle(
+                        color: Colors.amberAccent, fontSize: 10))),
               ],
             ],
           ),

@@ -32,39 +32,53 @@ class HealthBannerWidget extends StatelessWidget {
     return Container(
       color: const Color(0xFF1E293B),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final healthSummary = Row(
             children: [
               Icon(icon, color: statusColor, size: 20),
               const SizedBox(width: 8),
-              Text(
-                'STREAM HEALTH: ${health.state}',
-                style: TextStyle(
-                  color: statusColor,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 13,
-                  letterSpacing: 1.1,
+              Flexible(
+                child: Text(
+                  'STREAM HEALTH: ${health.state}  •  ${health.message}',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: statusColor,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                    letterSpacing: 1.1,
+                  ),
                 ),
               ),
-              const SizedBox(width: 12),
-              Text(
-                '• ${health.message}',
-                style: const TextStyle(color: Colors.white70, fontSize: 12),
-              ),
             ],
-          ),
-          Row(
+          );
+          final metrics = Wrap(
+            spacing: 12,
             children: [
-              _buildMetricChip('Gaps', '${health.gapCount}', health.gapCount > 0 ? Colors.redAccent : Colors.white70),
-              const SizedBox(width: 12),
-              _buildMetricChip('Seq ID', '${health.lastSequenceId ?? "N/A"}', Colors.cyanAccent),
-              const SizedBox(width: 12),
-              _buildMetricChip('Latency', '${health.avgLatencyMs.toStringAsFixed(1)} ms', Colors.white70),
+              _buildMetricChip('Gaps', '${health.gapCount}',
+                  health.gapCount > 0 ? Colors.redAccent : Colors.white70),
+              _buildMetricChip('Seq ID', '${health.lastSequenceId ?? "N/A"}',
+                  Colors.cyanAccent),
+              _buildMetricChip(
+                  'Latency',
+                  '${health.avgLatencyMs.toStringAsFixed(1)} ms',
+                  Colors.white70),
             ],
-          ),
-        ],
+          );
+          if (constraints.maxWidth < 850) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [healthSummary, const SizedBox(height: 8), metrics],
+            );
+          }
+          return Row(
+            children: [
+              Expanded(child: healthSummary),
+              const SizedBox(width: 12),
+              metrics,
+            ],
+          );
+        },
       ),
     );
   }
@@ -79,8 +93,13 @@ class HealthBannerWidget extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Text('$label: ', style: const TextStyle(color: Colors.white54, fontSize: 11)),
-          Text(value, style: TextStyle(color: valueColor, fontWeight: FontWeight.bold, fontSize: 11)),
+          Text('$label: ',
+              style: const TextStyle(color: Colors.white54, fontSize: 11)),
+          Text(value,
+              style: TextStyle(
+                  color: valueColor,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 11)),
         ],
       ),
     );

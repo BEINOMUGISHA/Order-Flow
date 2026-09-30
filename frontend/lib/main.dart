@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 import 'models/order_flow_models.dart';
 import 'services/websocket_service.dart';
@@ -12,7 +11,9 @@ void main() {
 }
 
 class OrderFlowApp extends StatelessWidget {
-  const OrderFlowApp({super.key});
+  final bool connectToBackend;
+
+  const OrderFlowApp({super.key, this.connectToBackend = true});
 
   @override
   Widget build(BuildContext context) {
@@ -22,7 +23,8 @@ class OrderFlowApp extends StatelessWidget {
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF0B132B),
         primaryColor: Colors.cyanAccent,
-        appBarTheme: const AppBarTheme(backgroundColor: Color(0xFF0F172A), elevation: 0),
+        appBarTheme:
+            const AppBarTheme(backgroundColor: Color(0xFF0F172A), elevation: 0),
         expansionTileTheme: const ExpansionTileThemeData(
           iconColor: Colors.white54,
           collapsedIconColor: Colors.white38,
@@ -30,16 +32,19 @@ class OrderFlowApp extends StatelessWidget {
           collapsedTextColor: Colors.white70,
         ),
       ),
-      home: const OrderFlowDashboardScreen(),
+      home: OrderFlowDashboardScreen(connectToBackend: connectToBackend),
     );
   }
 }
 
 class OrderFlowDashboardScreen extends StatefulWidget {
-  const OrderFlowDashboardScreen({super.key});
+  final bool connectToBackend;
+
+  const OrderFlowDashboardScreen({super.key, this.connectToBackend = true});
 
   @override
-  State<OrderFlowDashboardScreen> createState() => _OrderFlowDashboardScreenState();
+  State<OrderFlowDashboardScreen> createState() =>
+      _OrderFlowDashboardScreenState();
 }
 
 class _OrderFlowDashboardScreenState extends State<OrderFlowDashboardScreen> {
@@ -56,14 +61,16 @@ class _OrderFlowDashboardScreenState extends State<OrderFlowDashboardScreen> {
   FootprintBar? _activeBar;
   double _sessionCvd = 0.0;
   List<AlertPayload> _alerts = [];
+  List<MarketInfo> _markets = [];
+  String _selectedSymbol = '';
 
   @override
   void initState() {
     super.initState();
-    _wsService.connect();
-    _wsService.stream.listen((message) {
-      _handleServerMessage(message);
-    });
+    if (widget.connectToBackend) {
+      _wsService.connect();
+      _wsService.stream.listen(_handleServerMessage);
+    }
   }
 
   void _handleServerMessage(Map<String, dynamic> msg) {
@@ -71,6 +78,12 @@ class _OrderFlowDashboardScreenState extends State<OrderFlowDashboardScreen> {
       final String type = msg['type'] ?? '';
 
       if (type == 'INITIAL_STATE') {
+        if (msg['markets'] != null) {
+          _markets = (msg['markets'] as List)
+              .map((market) => MarketInfo.fromJson(market))
+              .toList();
+        }
+        if (msg['symbol'] != null) _selectedSymbol = msg['symbol'];
         if (msg['health'] != null) {
           _health = HealthStatus.fromJson(msg['health']);
         }
@@ -89,8 +102,12 @@ class _OrderFlowDashboardScreenState extends State<OrderFlowDashboardScreen> {
               .toList();
         }
       } else if (type == 'TICK_UPDATE') {
-        if (msg['health'] != null) _health = HealthStatus.fromJson(msg['health']);
-        if (msg['active_bar'] != null) _activeBar = FootprintBar.fromJson(msg['active_bar']);
+        if (msg['health'] != null) {
+          _health = HealthStatus.fromJson(msg['health']);
+        }
+        if (msg['active_bar'] != null) {
+          _activeBar = FootprintBar.fromJson(msg['active_bar']);
+        }
         if (msg['completed_bar'] != null) {
           _completedBars.add(FootprintBar.fromJson(msg['completed_bar']));
           // Keep only last 30 bars to avoid unbounded memory growth
@@ -119,28 +136,87 @@ class _OrderFlowDashboardScreenState extends State<OrderFlowDashboardScreen> {
     super.dispose();
   }
 
+  void _selectMarket(String symbol) {
+    if (symbol == _selectedSymbol) return;
+    setState(() {
+      _selectedSymbol = symbol;
+      _health = HealthStatus(
+        state: 'DISCONNECTED',
+        gapCount: 0,
+        avgLatencyMs: 0.0,
+        message: 'Connecting to market stream...',
+      );
+      _completedBars = [];
+      _activeBar = null;
+      _sessionCvd = 0.0;
+      _alerts = [];
+    });
+    _wsService.connect(symbol: symbol);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Row(
           children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.cyanAccent.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(4),
-                border: Border.all(color: Colors.cyanAccent),
+            if (_markets.isNotEmpty)
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 190),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: _markets
+                            .any((market) => market.symbol == _selectedSymbol)
+                        ? _selectedSymbol
+                        : null,
+                    hint: const Text('Select market'),
+                    dropdownColor: const Color(0xFF0F172A),
+                    style: const TextStyle(
+                      color: Colors.cyanAccent,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                    items: _markets
+                        .map((market) => DropdownMenuItem(
+                              value: market.symbol,
+                              child: Text(
+                                  '${market.symbol}  ·  ${market.provider}'),
+                            ))
+                        .toList(),
+                    onChanged: (symbol) {
+                      if (symbol != null) _selectMarket(symbol);
+                    },
+                  ),
+                ),
+              )
+            else
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.cyanAccent.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(color: Colors.cyanAccent),
+                ),
+                child: Text(
+                  _selectedSymbol.isEmpty ? 'ORDER FLOW' : _selectedSymbol,
+                  style: const TextStyle(
+                      color: Colors.cyanAccent,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13),
+                ),
               ),
-              child: const Text(
-                'BTCUSDT.PERP',
-                style: TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold, fontSize: 13),
-              ),
-            ),
             const SizedBox(width: 12),
-            const Text(
-              'REAL-TIME ORDER FLOW ENGINE',
-              style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.1),
+            Expanded(
+              child: Text(
+                'REAL-TIME ORDER FLOW ENGINE',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.1),
+              ),
             ),
           ],
         ),
@@ -149,7 +225,8 @@ class _OrderFlowDashboardScreenState extends State<OrderFlowDashboardScreen> {
             padding: const EdgeInsets.only(right: 16),
             child: Center(
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
                   color: const Color(0xFF1E293B),
                   borderRadius: BorderRadius.circular(4),
@@ -157,11 +234,14 @@ class _OrderFlowDashboardScreenState extends State<OrderFlowDashboardScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Text('SESSION CVD: ', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                    const Text('SESSION CVD: ',
+                        style: TextStyle(color: Colors.white54, fontSize: 12)),
                     Text(
                       '${_sessionCvd >= 0 ? "+" : ""}${_sessionCvd.toStringAsFixed(2)}',
                       style: TextStyle(
-                        color: _sessionCvd >= 0 ? Colors.greenAccent : Colors.redAccent,
+                        color: _sessionCvd >= 0
+                            ? Colors.greenAccent
+                            : Colors.redAccent,
                         fontWeight: FontWeight.bold,
                         fontSize: 13,
                       ),

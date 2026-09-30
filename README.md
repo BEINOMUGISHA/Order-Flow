@@ -33,7 +33,7 @@ Exchange WS/REST  →  Ingestion Layer  →  Order Book & Tape State
 |-------|-----------|
 | Backend | Python 3.12, FastAPI, asyncio, Pydantic v2, uvicorn |
 | Frontend | Flutter (Dart), custom `CustomPainter` canvas charts |
-| Data Feed | Binance WebSocket (aggTrade + depth@100ms) — simulated feed included |
+| Data Feed | Provider-neutral normalized trade/book events; simulated adapter included |
 | Tests | pytest, pytest-asyncio |
 
 ---
@@ -51,7 +51,7 @@ Exchange WS/REST  →  Ingestion Layer  →  Order Book & Tape State
 
 ---
 
-## Test Suite — 7/7 Passing
+## Test Suite
 
 ```
 test_delta_cvd_exact_reconciliation     ∑BarDelta ≡ CVD with < 1e-9 tolerance
@@ -68,6 +68,45 @@ python -m pytest backend/tests/ -v
 ```
 
 ---
+
+## Multi-Market Configuration
+
+The backend supports isolated order-flow state per configured symbol. Set
+`ORDERFLOW_MARKETS` to a JSON array before starting the backend:
+
+```json
+[
+  {"symbol":"BTCUSDT","provider":"simulated","asset_class":"crypto","tick_size":0.1,"initial_price":65000},
+  {"symbol":"AAPL","provider":"simulated","asset_class":"equity","tick_size":0.01,"initial_price":200}
+]
+```
+
+Each entry selects a provider adapter and instrument-specific tick size. The
+Flutter dashboard lists configured markets and subscribes to the selected
+symbol. `provider` must be registered with
+`register_market_data_adapter()`; only `simulated` is registered by default.
+The existing Binance message parser is not yet a running feed adapter, and no
+other broker/exchange API is currently connected. Broker credentials should be
+configured as deployment secrets, never committed to this repository.
+
+## Hosting
+
+The repository includes deploy configurations for GitHub Pages and Vercel
+(Flutter web frontend), plus Render (FastAPI backend).
+
+1. Deploy the Render service from `render.yaml`. It starts with simulated
+     BTCUSDT and AAPL markets. Wait for `/api/markets` to respond.
+2. Set `ORDERFLOW_WS_URL` to `wss://<your-render-service>.onrender.com/ws/orderflow`
+     as a GitHub Actions repository variable and as a Vercel environment variable.
+3. Enable GitHub Pages with **GitHub Actions** as its source. Each push to
+     `main` builds the Flutter web client and deploys it under the repository path.
+4. Import the repository into Vercel. Its `vercel.json` builds the same client
+     at the domain root; configure the same `ORDERFLOW_WS_URL` variable there.
+
+The frontend build fails when `ORDERFLOW_WS_URL` is missing rather than silently
+shipping a browser client pointed at localhost. The Pages and Vercel frontends
+are public clients, so the Render API must allow their origins if CORS is later
+restricted.
 
 ## Running Locally
 
@@ -136,17 +175,21 @@ flutter run -d windows                   # Windows desktop (requires VS C++ tool
 2. **Lee-Ready on zero-tick** — Repeats the previous direction; error rate increases on heavily-traded, tight-spread instruments.
 3. **Absorption price movement check** — Measured on the full bar high-low range, not per individual trade. A coarser but simpler signal.
 4. **No TimescaleDB persistence** — Historical data is in-memory only for this build. Production deployment should add Postgres/TimescaleDB for bar storage.
-5. **Simulated feed by default** — Live WS ingestion via `BinanceClient` is implemented in `backend/app/ingestion/binance_client.py` and ready to wire in.
+5. **Simulated feed by default** — `BinanceClient` currently parses Binance events but is not registered as a live-stream adapter. Provider-specific WebSocket/REST connectors must be implemented and registered before live market data is available.
 
 ---
 
-## Connecting to Live Binance Feed
+## Adding a Live Provider
 
-Replace the `simulated_tick_generator()` coroutine in `backend/app/main.py` with the `BinanceClient` WS loop. The client handles:
-- Automatic exponential backoff reconnection
-- Sequence gap detection (`U`/`u`/`pu` field validation per Binance docs)
-- REST L2 snapshot resync
-- Normalized `Tick` and `BookUpdate` schema output
+Implement the `MarketDataAdapter` protocol and register its factory under the
+provider name used in `ORDERFLOW_MARKETS`. The adapter must translate that
+provider's events into normalized `Tick`, `BookUpdate`, and
+`OrderBookSnapshot` models. Keep provider-specific authentication in
+environment variables or the hosting platform's secret store. The analytics
+consume normalized events and are shared across instruments and providers.
+
+`BinanceClient` contains Binance message parsers, but does not yet implement or
+register a live `MarketDataAdapter`. No live provider is enabled by default.
 
 ---
 

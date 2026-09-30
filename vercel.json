@@ -1,0 +1,7 @@
+{
+  "version": 2,
+  "framework": null,
+  "installCommand": "true",
+  "buildCommand": "bash scripts/build_flutter_web.sh /",
+  "outputDirectory": "frontend/build/web"
+}
